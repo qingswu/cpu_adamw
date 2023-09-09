@@ -5,9 +5,30 @@
 
 import torch
 from cpuinfo import get_cpu_info
-from deepspeed.utils import logger
-from deepspeed.utils.logging import should_log_le
-from deepspeed.ops.op_builder import CPUAdamBuilder
+import _cpu_adamw
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+log_levels = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "critical": logging.CRITICAL,
+}
+
+
+def should_log_le(max_log_level_str):
+    if not isinstance(max_log_level_str, str):
+        raise ValueError(f"{max_log_level_str} is not a string")
+
+    max_log_level_str = max_log_level_str.lower()
+    if max_log_level_str not in log_levels:
+        raise ValueError(f"{max_log_level_str} is not one of the `logging` levels")
+
+    return logger.getEffectiveLevel() <= log_levels[max_log_level_str]
 
 
 class DeepSpeedCPUAdam(torch.optim.Optimizer):
@@ -91,15 +112,14 @@ class DeepSpeedCPUAdam(torch.optim.Optimizer):
         DeepSpeedCPUAdam.optimizer_id = DeepSpeedCPUAdam.optimizer_id + 1
         self.adam_w_mode = adamw_mode
         self.fp32_optimizer_states = fp32_optimizer_states
-        self.ds_opt_adam = CPUAdamBuilder().load()
 
-        self.ds_opt_adam.create_adam(self.opt_id, lr, betas[0], betas[1], eps, weight_decay, adamw_mode,
+        _cpu_adamw.create_adam(self.opt_id, lr, betas[0], betas[1], eps, weight_decay, adamw_mode,
                                      should_log_le("info"))
 
     def __del__(self):
         # need to destroy the C++ object explicitly to avoid a memory leak when deepspeed.initialize
         # is used multiple times in the same process (notebook or pytest worker)
-        self.ds_opt_adam.destroy_adam(self.opt_id)
+        _cpu_adamw.destroy_adam(self.opt_id)
 
     def __setstate__(self, state):
         super(DeepSpeedCPUAdam, self).__setstate__(state)
@@ -170,12 +190,12 @@ class DeepSpeedCPUAdam(torch.optim.Optimizer):
                 beta1, beta2 = group['betas']
 
                 if fp16_param_groups is not None:
-                    self.ds_opt_adam.adam_update_copy(self.opt_id, state['step'], group['lr'], beta1, beta2,
+                    _cpu_adamw.adam_update_copy(self.opt_id,state['step'], group['lr'], beta1, beta2,
                                                       group['eps'], group['weight_decay'], group['bias_correction'],
                                                       p.data, p.grad.data, state['exp_avg'], state['exp_avg_sq'],
                                                       fp16_param_groups[group_id][param_id].data)
                 else:
-                    self.ds_opt_adam.adam_update(self.opt_id, state['step'], group['lr'], beta1, beta2, group['eps'],
+                    _cpu_adamw.adam_update(self.opt_id, state['step'], group['lr'], beta1, beta2, group['eps'],
                                                  group['weight_decay'], group['bias_correction'], p.data, p.grad.data,
                                                  state['exp_avg'], state['exp_avg_sq'])
         return loss
